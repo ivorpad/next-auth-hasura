@@ -1,13 +1,12 @@
-import { useSession, getSession } from "next-auth/client";
+import { useSession } from "next-auth/client";
 import Layout from "../components/layout";
-import cookie from "cookie";
 import jwt from "jsonwebtoken";
-export default function Page() {
-  const [session, loading] = useSession();
+import getSession from '../utils/getSession'
+export default function Page({ session }) {
 
-  if (process.browser) {
-    console.log(session);
-  }
+  const [sess] = useSession()
+
+  console.log({sess, session})
 
   return (
     <Layout>
@@ -37,14 +36,11 @@ export default function Page() {
 }
 
 // Export the `session` prop to use sessions with Server Side Rendering
-export async function getServerSideProps({ req }) {
+export async function getServerSideProps({ req, res }) {
 
-  const { getToken } = require("next-auth/jwt");
-  const token = await getToken({ req, encryption: true, raw: true, secret: process.env.SECRET });
-
-  console.log(token);
-
+  const { session } = getSession(req, res);
+  
   return {
-    props: { },
+    props: { session },
   };
 }
