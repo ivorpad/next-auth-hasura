@@ -1,12 +1,32 @@
-import Layout from '../components/layout'
+import Home from '../components/home'
+import { createClient, Provider } from "urql";
+import { useSession } from "next-auth/client";
+
+const UrqlProvider = ({children}) => {
+  const [session, loading] = useSession();
+
+  if(process.browser) {
+    console.log(session);
+  }
+
+  const client = createClient({
+    url: process.env.NEXT_PUBLIC_HASURA_GRAPHQL_ENDPOINT,
+    fetchOptions: () => {
+      return {
+        headers: {
+          authorization: session?.access_token ? `Bearer ${session.access_token}` : "",
+        },
+      };
+    },
+  });
+
+  return <Provider value={client}>{children}</Provider>;
+}
 
 export default function Page () {
   return (
-    <Layout>
-      <h1>NextAuth.js Example</h1>
-      <p>
-        This is an example site to demonstrate how to use <a href={`https://next-auth.js.org`}>NextAuth.js</a> for authentication.
-      </p>
-    </Layout>
-  )
+    <UrqlProvider>
+      <Home />
+    </UrqlProvider>
+  );
 }

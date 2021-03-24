@@ -2,9 +2,9 @@ import NextAuth from "next-auth";
 import Providers from "next-auth/providers";
 import add from "date-fns/add";
 import jwt from "jsonwebtoken";
-import getUnixTime from 'date-fns/getUnixTime'
-import Cookies from 'cookies'
-
+import getUnixTime from "date-fns/getUnixTime";
+import Cookies from "cookies";
+import { gql, GraphQLClient } from "graphql-request";
 function makeId(length) {
   var result = "";
   var characters =
@@ -36,7 +36,6 @@ const generateHasuraJwtClaims = (user) => {
 };
 
 const fakeRefreshToken = (token) => {
-
   const decodedToken = jwt.decode(token);
   const jwtClaims = generateHasuraJwtClaims(decodedToken);
   const refreshToken = makeId(30);
@@ -48,8 +47,14 @@ const fakeRefreshToken = (token) => {
 };
 
 export default async (req, res) => {
-
   const cookies = new Cookies(req, res);
+
+  const client = new GraphQLClient(process.env.HASURA_GRAPHQL_ENDPOINT);
+
+  const requestHeaders = {
+    "x-hasura-use-backend-only-permissions": true,
+    "x-hasura-admin-secret": process.env.HASURA_ADMIN_SECRET,
+  };
 
   return NextAuth(req, res, {
     // https://next-auth.js.org/configuration/providers
@@ -59,68 +64,115 @@ export default async (req, res) => {
         clientSecret: process.env.GITHUB_SECRET,
       }),
     ],
-    // Database optional. MySQL, Maria DB, Postgres and MongoDB are supported.
-    // https://next-auth.js.org/configuration/databases
-    //
-    // Notes:
-    // * You must to install an appropriate node_module for your database
-    // * The Email provider requires a database (OAuth providers do not)
     database: process.env.DATABASE_URL,
-
-    // The secret should be set to a reasonably long random string.
-    // It is used to sign cookies and to sign and encrypt JSON Web Tokens, unless
-    // a separate secret is defined explicitly for encrypting the JWT.
     secret: process.env.SECRET,
-
     session: {
-      // Use JSON Web Tokens for session instead of database sessions.
-      // This option can be used with or without a database for users/accounts.
-      // Note: `jwt` is automatically set to `true` if no database is specified.
       jwt: true,
-
-      // Seconds - How long until an idle session expires and is no longer valid.
       maxAge: process.env.MAX_AGE, // 30 days
-
-      // Seconds - Throttle how frequently to write to database to extend a session.
-      // Use it to limit write operations. Set to 0 to always update the database.
-      // Note: This option is ignored if using JSON Web Tokens
-      // updateAge: 24 * 60 * 60, // 24 hours
     },
-
-    // JSON Web tokens are only used for sessions if the `jwt: true` session
-    // option is set - or by default if no database is specified.
-    // https://next-auth.js.org/configuration/options#jwt
     jwt: {
-      // A secret to use for key generation (you should set this explicitly)
-      // secret: 'INp8IvdIyeMcoGAgFGoA61DdBglwwSqnXJZkgz8PSnw',
-      // Set to true to use encryption (default: false)
-      // encryption: true,
-      // You can define your own encode/decode functions for signing and encryption
-      // if you want to override the default behaviour.
       encode: async ({ secret, token, maxAge }) => {
-        const jwtClaims = generateHasuraJwtClaims(token);
-        const encodedToken = jwt.sign(jwtClaims, secret, {
+        let encodedToken, jwtClaims;
+
+        // Save the next token in a new variable
+        const nextRefreshToken = token.refreshToken;
+
+        // Delete from the access token to avoid storing it again
+        delete token.refreshToken;
+
+        // Generate our JWT claims
+        jwtClaims = generateHasuraJwtClaims(token);
+
+        // Encode the JTW 
+        encodedToken = jwt.sign(jwtClaims, secret, {
           algorithm: "HS256",
         });
 
-        return Promise.resolve(encodedToken);
+
+        // We store prev and next refreshTokens for better readability
+        const refreshToken = {
+          prev: cookies.get("next-auth.refresh-token"),
+          next: nextRefreshToken,
+        };
+
+        if (!refreshToken.next) {
+          const InsertAccessToken = gql`
+            mutation InsertAccessToken(
+              $refresh_token: String = ""
+              $access_token: String = ""
+            ) {
+              update_sessions(
+                where: { refresh_token: { _eq: $refresh_token } }
+                _set: {
+                  access_token: $access_token
+                }
+              ) {
+                returning {
+                  access_token
+                }
+              }
+            }
+          `;
+
+          const data = await client.request(
+            InsertAccessToken,
+            {
+              refresh_token: refreshToken.prev,
+              access_token: encodedToken,
+            },
+            requestHeaders
+          );
+        } else {
+          const UpdateSession = gql`
+            mutation UpdateSession(
+              $old_refresh_token: String = ""
+              $refresh_token: String = ""
+              $access_token: String = ""
+            ) {
+              update_sessions(
+                where: { refresh_token: { _eq: $old_refresh_token } }
+                _set: {
+                  access_token: $access_token
+                  refresh_token: $refresh_token
+                }
+              ) {
+                returning {
+                  refresh_token
+                  access_token
+                }
+              }
+            }
+          `;
+
+          const data = await client.request(
+            UpdateSession,
+            {
+              old_refresh_token: refreshToken.prev,
+              refresh_token: refreshToken.next,
+              access_token: encodedToken,
+            },
+            requestHeaders
+          );
+        }
+
+
+          return Promise.resolve(encodedToken);
       },
       decode: async ({ secret, token, maxAge }) => {
         try {
+          // Verify the current token, if it fails it means it expired and then we need to refresh
           const decodedToken = jwt.verify(token, secret, {
             algorithms: ["HS256"],
           });
           return decodedToken;
         } catch (error) {
+          // Token expired let's do an access token rotation
           const newToken = fakeRefreshToken(token);
           if (newToken) {
+
             const expires = add(new Date(), {
               days: 15,
             });
-
-            // find the session by refreshToken
-            // if found then refresh
-            // the returned token will be set as a cookie
 
             cookies.set("next-auth.refresh-token", newToken.refreshToken, {
               httpOnly: true,
@@ -130,7 +182,7 @@ export default async (req, res) => {
             });
 
             // delete the returning refresh token because we don't want to expose it in the token
-            delete newToken.refreshToken;
+            // delete newToken.refreshToken;
             // return the new token
             return newToken;
           }
@@ -141,22 +193,8 @@ export default async (req, res) => {
       },
     },
 
-    // You can define custom pages to override the built-in ones. These will be regular Next.js pages
-    // so ensure that they are placed outside of the '/api' folder, e.g. signIn: '/auth/mycustom-signin'
-    // The routes shown here are the default URLs that will be used when a custom
-    // pages is not specified for that route.
-    // https://next-auth.js.org/configuration/pages
-    pages: {
-      // signIn: '/auth/signin',  // Displays signin buttons
-      // signOut: '/auth/signout', // Displays form with sign out button
-      // error: '/auth/error', // Error code passed in query string as ?error=
-      // verifyRequest: '/auth/verify-request', // Used for check email page
-      // newUser: null // If set, new users will be directed here on first sign in
-    },
+    pages: {},
 
-    // Callbacks are asynchronous functions you can use to control what happens
-    // when an action is performed.
-    // https://next-auth.js.org/configuration/callbacks
     callbacks: {
       // async signIn(user, account, profile) { return true },
       // async redirect(url, baseUrl) { return baseUrl },
@@ -171,35 +209,97 @@ export default async (req, res) => {
         return Promise.resolve(session);
       },
       async jwt(token, user, account, profile, isNewUser) {
-
         // initial sign in
         if (user) {
           const expires = add(new Date(), { days: 15 });
-          cookies.set("next-auth.refresh-token", makeId(30), {
-            httpOnly: true,
-            path: "/",
-            expires,
-            overwrite: true,
-          });
+          const refresh_token = makeId(30);
 
-          return {
-            name: user.name,
-            id: user.id,
-            image: user.image,
-          };
+          let email;
+          if (account.provider === "github") {
+            const emailRes = await fetch("https://api.github.com/user/emails", {
+              headers: {
+                Authorization: `token ${account.accessToken}`,
+              },
+            });
+            const emails = await emailRes.json();
+            const githubEmail = emails.find((e) => e.primary).email;
+            email = githubEmail;
+          } else {
+            email = user.email;
+          }
+
+         const variables = {
+           object: {
+             name: user.name,
+             email: email,
+             sessions: {
+               data: {
+                 refresh_token: refresh_token,
+                 expires,
+               },
+             },
+           },
+         };
+
+          const InsertUser = gql`
+            mutation InsertUser($object: users_insert_input!) {
+              insert_users_one(
+                object: $object
+                on_conflict: {
+                  constraint: users_email_key
+                  update_columns: [updated_at, name]
+                }
+              ) {
+                id
+                sessions {
+                  refresh_token
+                }
+              }
+            }
+          `;
+
+          const data = await client.request(
+            InsertUser,
+            variables,
+            requestHeaders
+          );
+
+          if (data) {
+            cookies.set(
+              "next-auth.refresh-token",
+              data.insert_users_one.sessions[0].refresh_token,
+              {
+                httpOnly: true,
+                path: "/",
+                expires,
+                overwrite: true,
+              }
+            );
+
+            return {
+              name: user.name,
+              id: data.insert_users_one.id,
+              image: user.image,
+            };
+          }
         }
 
+        token.refresh_token = makeId(30);
         return token;
       },
     },
 
     // Events are useful for logging
     // https://next-auth.js.org/configuration/events
-    events: {},
+    events: {
+      signOut(message) {
+        cookies.set("next-auth.refresh-token", "", {
+          maxAge: 0
+        });
+      }
+    },
 
     // Enable debug messages in the console if you are having problems
     debug: false,
   });
-}
-
-
+};

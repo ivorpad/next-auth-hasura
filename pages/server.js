@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import getSession from '../utils/getSession'
 export default function Page({ session, refresh_token }) {
   
-  console.log({ refresh_token });
+  console.log({ refresh_token, session });
 
   return (
     <Layout>
@@ -40,7 +40,7 @@ export async function getServerSideProps({ req, res }) {
 
   // find session by refresh_token,
   // if found then use the access_token to make requests
-  // or simply use the admin secrets
+  // or simply use the server API
   const refresh_token = cookies.get("next-auth.refresh-token");
 
   const { session } = getSession(req, res);
