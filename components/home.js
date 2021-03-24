@@ -2,8 +2,7 @@ import Layout from "./layout";
 import { useQuery } from "urql";
 
 
-function Home() {
-
+function Home({ loading }) {
   const UserQuery = `
     query {
       users {
@@ -16,7 +15,7 @@ function Home() {
     query: UserQuery,
   });
 
-  if(user.fetching) return <p>is fetching...</p>
+  if (user.fetching) return <p>is fetching...</p>;
 
   const [singleUser] = user.data?.users ?? [{ name: "Not Signed In" }];
 

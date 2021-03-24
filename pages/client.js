@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import Layout from '../components/layout'
-
+import { getSession } from "next-auth/client";
 export default function Page () {
+
   return (
     <Layout>
       <h1>Client Side Rendering</h1>

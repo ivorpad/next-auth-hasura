@@ -3,7 +3,22 @@ const { NextAuthHandler } = require("next-auth");
 import jwt from "jsonwebtoken";
 import Cookies from 'cookies';
 
-function getSession(req, res) {
+const generateNewJtwPayload = (token) => {
+
+}
+
+const generateNewSession = async (session, jwtPayload) => {
+  const encodedToken = jwt.sign(token, process.env.SECRET, {
+    algorithm: "HS256",
+  });
+  if (token) {
+    session.user = { name: token.name, image: token.image };
+    session.access_token = encodedToken;
+  }
+  return Promise.resolve(session);
+}
+
+async function getSession(req, res) {
   const cookies = new Cookies(req, res);
   const sessionCookie = cookies.get("next-auth.session-token");
 
@@ -12,6 +27,8 @@ function getSession(req, res) {
   }
 
   const decodedJwt = jwt.decode(sessionCookie);
+
+  const payload = await generateNewJtwPayload(decodedJwt);
 
   const sessionExpiresDate = new Date();
   sessionExpiresDate.setTime(sessionExpiresDate.getTime() + process.env.MAX_AGE * 1000);
@@ -25,6 +42,13 @@ function getSession(req, res) {
     },
     expires: sessionExpires,
   };
+
+  const sessionPayload = await callbacks.session(
+    defaultSessionPayload,
+    jwtPayload
+  );
+
+
 
   return { session: defaultSessionPayload };
 }

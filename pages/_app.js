@@ -31,3 +31,16 @@ export default function MyApp({ Component, pageProps }) {
     </Provider>
   );
 }
+
+MyApp.getInitialProps = async (appContext) => {
+  // calls page's `getInitialProps` and fills `appProps.pageProps`
+  const appProps = await App.getInitialProps(appContext);
+
+  const session = await getSession(appContext.ctx);
+
+
+  // TODO: Rotate the refresh token here and add to cookie
+  console.log({appSession: session});
+
+  return { ...appProps }
+}

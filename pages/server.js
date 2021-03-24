@@ -1,10 +1,8 @@
-import { useSession } from "next-auth/client";
+import { useSession, getSession } from "next-auth/client";
 import Layout from "../components/layout";
 import jwt from "jsonwebtoken";
-import getSession from '../utils/getSession'
+// import getSession from '../utils/getSession'
 export default function Page({ session, refresh_token }) {
-  
-  console.log({ refresh_token, session });
 
   return (
     <Layout>
@@ -41,11 +39,13 @@ export async function getServerSideProps({ req, res }) {
   // find session by refresh_token,
   // if found then use the access_token to make requests
   // or simply use the server API
-  const refresh_token = cookies.get("next-auth.refresh-token");
+  const refresh_token = cookies.get("next-auth.refresh-token") ?? null;
 
-  const { session } = getSession(req, res);
+  const session = await getSession( {req});
+
+  console.log({ session, refresh_token });
 
   return {
-    props: { session, refresh_token },
+    props: { session},
   };
 }

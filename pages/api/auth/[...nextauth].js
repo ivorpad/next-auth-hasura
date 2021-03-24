@@ -30,19 +30,57 @@ const generateHasuraJwtClaims = (user) => {
       "x-hasura-role": "user",
       "x-hasura-user-id": user.id ? user.id.toString() : undefined,
     },
+    refresh_token: user.refresh_token
   };
 
   return jwtClaims;
 };
 
-const fakeRefreshToken = (token) => {
+const fakeRefreshToken = async (token, cookies) => {
   const decodedToken = jwt.decode(token);
   const jwtClaims = generateHasuraJwtClaims(decodedToken);
-  const refreshToken = makeId(30);
+  const refresh_token = makeId(30);
+  
+  const client = new GraphQLClient(process.env.HASURA_GRAPHQL_ENDPOINT);
+
+  const requestHeaders = {
+    "x-hasura-use-backend-only-permissions": true,
+    "x-hasura-admin-secret": process.env.HASURA_ADMIN_SECRET,
+  };
+
+  const GetSession = gql`
+    query GetSession($refresh_token: String = "") {
+      sessions(where: { refresh_token: { _eq: $refresh_token } }) {
+        user {
+          name
+        }
+      }
+    }
+  `;
+
+
+  const data = await client.request(
+    GetSession,
+    {
+      refresh_token: cookies.get("next-auth.refresh-token"),
+    },
+    requestHeaders
+  );
+
+  const user = data.sessions?.[0]?.user; 
+
+  if(!user) {
+    cookies.set("next-auth.refresh-token", "", {
+      maxAge: 0,
+    });
+    return {
+      error: "RefreshTokenError",
+    };
+  } 
 
   return {
     ...jwtClaims,
-    refreshToken,
+    refresh_token,
   };
 };
 
@@ -75,88 +113,19 @@ export default async (req, res) => {
         let encodedToken, jwtClaims;
 
         // Save the next token in a new variable
-        const nextRefreshToken = token.refreshToken;
+        const nextRefreshToken = token.refresh_token;
 
         // Delete from the access token to avoid storing it again
-        delete token.refreshToken;
+        // delete token.refresh_token;
 
         // Generate our JWT claims
         jwtClaims = generateHasuraJwtClaims(token);
 
-        // Encode the JTW 
+        // Encode the JTW
         encodedToken = jwt.sign(jwtClaims, secret, {
           algorithm: "HS256",
         });
-
-
-        // We store prev and next refreshTokens for better readability
-        const refreshToken = {
-          prev: cookies.get("next-auth.refresh-token"),
-          next: nextRefreshToken,
-        };
-
-        if (!refreshToken.next) {
-          const InsertAccessToken = gql`
-            mutation InsertAccessToken(
-              $refresh_token: String = ""
-              $access_token: String = ""
-            ) {
-              update_sessions(
-                where: { refresh_token: { _eq: $refresh_token } }
-                _set: {
-                  access_token: $access_token
-                }
-              ) {
-                returning {
-                  access_token
-                }
-              }
-            }
-          `;
-
-          const data = await client.request(
-            InsertAccessToken,
-            {
-              refresh_token: refreshToken.prev,
-              access_token: encodedToken,
-            },
-            requestHeaders
-          );
-        } else {
-          const UpdateSession = gql`
-            mutation UpdateSession(
-              $old_refresh_token: String = ""
-              $refresh_token: String = ""
-              $access_token: String = ""
-            ) {
-              update_sessions(
-                where: { refresh_token: { _eq: $old_refresh_token } }
-                _set: {
-                  access_token: $access_token
-                  refresh_token: $refresh_token
-                }
-              ) {
-                returning {
-                  refresh_token
-                  access_token
-                }
-              }
-            }
-          `;
-
-          const data = await client.request(
-            UpdateSession,
-            {
-              old_refresh_token: refreshToken.prev,
-              refresh_token: refreshToken.next,
-              access_token: encodedToken,
-            },
-            requestHeaders
-          );
-        }
-
-
-          return Promise.resolve(encodedToken);
+        return Promise.resolve(encodedToken);
       },
       decode: async ({ secret, token, maxAge }) => {
         try {
@@ -167,28 +136,15 @@ export default async (req, res) => {
           return decodedToken;
         } catch (error) {
           // Token expired let's do an access token rotation
-          const newToken = fakeRefreshToken(token);
+          const newToken = await fakeRefreshToken(token, cookies);
+
+          if(newToken.error) {
+            throw new Error("RefreshTokenExpiredError");
+          }
+
           if (newToken) {
-
-            const expires = add(new Date(), {
-              days: 15,
-            });
-
-            cookies.set("next-auth.refresh-token", newToken.refreshToken, {
-              httpOnly: true,
-              path: "/",
-              expires,
-              overwrite: true,
-            });
-
-            // delete the returning refresh token because we don't want to expose it in the token
-            // delete newToken.refreshToken;
-            // return the new token
             return newToken;
           }
-          return {
-            error: "TokenExpiredError",
-          };
         }
       },
     },
@@ -205,6 +161,7 @@ export default async (req, res) => {
         if (token) {
           session.user = { name: token.name, image: token.image };
           session.access_token = encodedToken;
+          session.refresh_token = token.refresh_token
         }
         return Promise.resolve(session);
       },
@@ -228,18 +185,18 @@ export default async (req, res) => {
             email = user.email;
           }
 
-         const variables = {
-           object: {
-             name: user.name,
-             email: email,
-             sessions: {
-               data: {
-                 refresh_token: refresh_token,
-                 expires,
-               },
-             },
-           },
-         };
+          const variables = {
+            object: {
+              name: user.name,
+              email: email,
+              sessions: {
+                data: {
+                  refresh_token: refresh_token,
+                  expires,
+                },
+              },
+            },
+          };
 
           const InsertUser = gql`
             mutation InsertUser($object: users_insert_input!) {
@@ -280,6 +237,7 @@ export default async (req, res) => {
               name: user.name,
               id: data.insert_users_one.id,
               image: user.image,
+              refresh_token: data.insert_users_one.sessions[0].refresh_token,
             };
           }
         }
@@ -294,9 +252,9 @@ export default async (req, res) => {
     events: {
       signOut(message) {
         cookies.set("next-auth.refresh-token", "", {
-          maxAge: 0
+          maxAge: 0,
         });
-      }
+      },
     },
 
     // Enable debug messages in the console if you are having problems
