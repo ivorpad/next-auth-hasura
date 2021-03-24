@@ -118,6 +118,10 @@ export default async (req, res) => {
               days: 15,
             });
 
+            // find the session by refreshToken
+            // if found then refresh
+            // the returned token will be set as a cookie
+
             cookies.set("next-auth.refresh-token", newToken.refreshToken, {
               httpOnly: true,
               path: "/",
